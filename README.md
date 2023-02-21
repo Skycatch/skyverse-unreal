@@ -1,6 +1,6 @@
-# Skycatch Skyverse Plugin for Unreal Engine 5
+# Skycatch SkyVerse Plugin for Unreal Engine 5
 
-This plugin leverages the Skycatch APIs to easily integrate Skyverse 3d models into Unreal Engine
+This plugin leverages the Skycatch APIs to easily integrate SkyVerse 3d models into Unreal Engine
 
 ### Version 1.0.1
 
@@ -38,9 +38,9 @@ This will allow you to use the plugin only for a specific project
 
 ## Enabling and Configuring the Plugin
 
-After following instructions on the `Installation` section, in the Editor, go to the Plugins Browser. There, search for the Skycatch Skyverse Plugin and mark the checkbox to enable it. This will ask for an Editor restart, click Yes.
+After following instructions on the `Installation` section, in the Editor, go to the Plugins Browser. There, search for the Skycatch SkyVerse Plugin and mark the checkbox to enable it. This will ask for an Editor restart, click Yes.
 
-In the Project Settings, go to Skycatch Skyverse Section. Here you can set the SKYVERSE KEY and the ENDPOINT parameters.
+In the Project Settings, go to Skycatch SkyVerse Section. Here you can set the SKYVERSE KEY and the ENDPOINT parameters.
 
 ## Using the Plugin
 
