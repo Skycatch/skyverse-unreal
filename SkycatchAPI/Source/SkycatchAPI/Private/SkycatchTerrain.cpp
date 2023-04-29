@@ -71,7 +71,7 @@ void ASkycatchTerrain::PostEditChangeProperty(FPropertyChangedEvent& PropertyCha
 
 			//Creates an array for making the query params used in the HTTP calling to Skycatch services
 			TArray<FStringFormatArg> args;
-			args.Add( FStringFormatArg(Latitude));
+			args.Add(FStringFormatArg(Latitude));
 			args.Add(FStringFormatArg(Longitude));
 
 			//Creates the string with the query params
@@ -138,6 +138,7 @@ void ASkycatchTerrain::FindResource(FString Params){
 	// Set the http URL
 	pRequest->SetURL(URL);
 
+
 	// Set the callback, which will execute when the HTTP call is complete
 	pRequest->OnProcessRequestComplete().BindLambda(
 		// Here, we "capture" the 'this' pointer (the "&"), so our lambda can call this
@@ -147,6 +148,7 @@ void ASkycatchTerrain::FindResource(FString Params){
 			FHttpResponsePtr pResponse,
 			bool connectedSuccessfully) mutable {
 
+		bool bRequestSuccess = false;
 		if (connectedSuccessfully) {
 
 			// We should have a JSON response - attempt to process it.
@@ -162,13 +164,12 @@ void ASkycatchTerrain::FindResource(FString Params){
 				FString TilesetUrl = SelectedTile->GetStringField("tilesetUrl");
 				//Calls the function that renders the requested tileset
 				RenderResource(TilesetUrl);
-				
+				bRequestSuccess = true;
 			}else
 			{
 				//If there is not tiles, prints an error
 				UE_LOG(LogSkycatch, Error, TEXT("No tiles found"));
 			}
-			
 		}
 		else {
 			//If there is an error in the connection to Skycatch services, sends an error
@@ -179,11 +180,11 @@ void ASkycatchTerrain::FindResource(FString Params){
 				UE_LOG(LogSkycatch, Error, TEXT("Request failed."));
 			}
 		}
+		OnTilesetRequestCompleted.Broadcast(bRequestSuccess, Cesium3DTilesetActor, CartographicPolygon);
 	});
 
 	// Finally, submit the request for processing
 	pRequest->ProcessRequest();
-
 }
 
 /**
@@ -206,6 +207,10 @@ void ASkycatchTerrain::RenderResource(FString url)
 		// Change tileset configuration
 		Cesium3DTilesetActor->SetEnableOcclusionCulling(false);
 		Cesium3DTilesetActor->MaximumScreenSpaceError = 32.0;
+
+		//Listen to the tileset on loaded event
+		CesiumTilesetLoadedListener.BindUFunction(this, "CesiumTilesetLoadedForwardBroadcast");
+		Cesium3DTilesetActor->OnTilesetLoaded.Add(CesiumTilesetLoadedListener);
 	}
 	
 	//If the actor exists, updates the actor properties to the new response from Skycatch services
@@ -213,10 +218,10 @@ void ASkycatchTerrain::RenderResource(FString url)
 	Cesium3DTilesetActor->SetTilesetSource(ETilesetSource::FromUrl);
 	Cesium3DTilesetActor->SetUrl(url);
 	UE_LOG(LogSkycatch, Display, TEXT("Response %s"), *url);
+
 	
 	//Calls the function to re-render the RasterOverlay from the new/updated tileset
 	RenderRasterOverlay();
-	
 }
 
 /**
@@ -357,17 +362,10 @@ void ASkycatchTerrain::SetRasterOverlayVisible(bool isVisible)
 	}
 }
 
-/**
- * @brief This function can be used to request a tileset in specific Latitude and Longitude coordinates.
- * 
- * @param Lat as a string containing the required Latitude
- * @param Lon as a string containing the required Longitude
- */
-void ASkycatchTerrain::RequestTilesetAtCoordinates(FString Lat, FString Lon){
-	
+void ASkycatchTerrain::MakeRequest(double Lat, double Lon) {
 	//Creates an array for making the query params used in the HTTP calling to Skycatch services
 	TArray<FStringFormatArg> args;
-	args.Add( FStringFormatArg(Lat));
+	args.Add(FStringFormatArg(Lat));
 	args.Add(FStringFormatArg(Lon));
 
 	//Creates the string with the query params
@@ -377,6 +375,11 @@ void ASkycatchTerrain::RequestTilesetAtCoordinates(FString Lat, FString Lon){
 	FindResource(QueryParams);
 }
 
+void ASkycatchTerrain::RequestTilesetAtCoordinates(double Lat, double Lon) {
+
+	MakeRequest(Lat, Lon);
+
+}
 
 /**
  * @brief This function can be used to request a tileset at the actor's location.
@@ -397,12 +400,118 @@ void ASkycatchTerrain::RequestTilesetAtActorLocation()
 	
 	// Convert actor coordinates from unreal to Lat, Lon
 	const auto LatLonHeight = GeoreferenceActor->TransformUnrealToLongitudeLatitudeHeight(glm::dvec3(ActorLocation.X, ActorLocation.Y, ActorLocation.Z));
+	const auto Lat = LatLonHeight.y;
+	const auto Lon = LatLonHeight.x;
 
-	// Set Lat, Lon values
-	Latitude = FString::SanitizeFloat(LatLonHeight.y);
-	Longitude = FString::SanitizeFloat(LatLonHeight.x);
+	// Update Lat, Lon values
+	Latitude = FString::SanitizeFloat(Lat);
+	Longitude = FString::SanitizeFloat(Lon);
 
 	// Now make a request on the given coordinates
-	RequestTilesetAtCoordinates(Latitude, Longitude);
+	MakeRequest(Lat, Lon);
+
 }
 
+
+/*
+ * @brief This function unloads the current tileset (if any) by destroying the associated Cesium actors
+ */
+void ASkycatchTerrain::UnloadTileset()
+{
+	if (Cesium3DTilesetActor)
+	{
+		Cesium3DTilesetActor->Destroy();
+		Cesium3DTilesetActor = nullptr;
+	}
+
+	if (CartographicPolygon)
+	{
+		// First. unregister the polygon in the world terrain
+		SetRasterOverlayVisible(false);
+
+		// Now mark the actor for destruction
+		CartographicPolygon->Destroy();
+		CartographicPolygon = nullptr;
+	}
+}
+
+void ASkycatchTerrain::CesiumTilesetLoadedForwardBroadcast()
+{
+	// This function is called whenever the instanced Cesium3DTiles Actor fires its "OnLoaded" event, so we just broadcast a new event with a reference to the tileset
+	OnTilesetLoaded.Broadcast(Cesium3DTilesetActor);
+}
+
+/*
+* Request at coordinates async wrapper
+*/
+URequestSkycatchTilesetAtCoordinates::URequestSkycatchTilesetAtCoordinates(const FObjectInitializer& ObjectInitializer) :
+	Super(ObjectInitializer),
+	WorldContextObject(nullptr),
+	SkycatchTerrain(nullptr),
+	Lat(0.0),
+	Lon(0.0)
+{
+
+}
+
+URequestSkycatchTilesetAtCoordinates* URequestSkycatchTilesetAtCoordinates::RequestSkycatchTilesetAtCoordinates(UObject* WorldContextObject, ASkycatchTerrain* SkycatchTerrain, double Lat, double Lon)
+{
+	URequestSkycatchTilesetAtCoordinates* ExecNode = NewObject<URequestSkycatchTilesetAtCoordinates>();
+	ExecNode->WorldContextObject = WorldContextObject;
+	ExecNode->SkycatchTerrain = SkycatchTerrain;
+	ExecNode->Lat = Lat;
+	ExecNode->Lon = Lon;
+	return ExecNode;
+}
+
+void URequestSkycatchTilesetAtCoordinates::Activate()
+{
+	this->SkycatchTerrainEventListener.BindUFunction(this, "Execute");
+	this->SkycatchTerrain->OnTilesetRequestCompleted.Add(this->SkycatchTerrainEventListener);
+
+	// Request tileset and bind on request completed to this class execute function
+	this->SkycatchTerrain->RequestTilesetAtCoordinates(Lat, Lon);
+}
+
+void URequestSkycatchTilesetAtCoordinates::Execute(bool success, ACesium3DTileset* CesiumTileset, ACesiumCartographicPolygon* CesiumPolygon)
+{
+	if (OnTilesetRequestCompleted.IsBound())
+		OnTilesetRequestCompleted.Broadcast(success, CesiumTileset, CesiumPolygon);
+
+	this->SkycatchTerrain->OnTilesetRequestCompleted.Remove(this->SkycatchTerrainEventListener);
+}
+
+/*
+* Request at actor location async wrapper
+*/
+URequestSkycatchTilesetAtActorLocation::URequestSkycatchTilesetAtActorLocation(const FObjectInitializer& ObjectInitializer) :
+	Super(ObjectInitializer),
+	WorldContextObject(nullptr),
+	SkycatchTerrain(nullptr)
+{
+
+}
+
+URequestSkycatchTilesetAtActorLocation* URequestSkycatchTilesetAtActorLocation::RequestSkycatchTilesetAtActorLocation(UObject* WorldContextObject, ASkycatchTerrain* SkycatchTerrain)
+{
+	URequestSkycatchTilesetAtActorLocation* ExecNode = NewObject<URequestSkycatchTilesetAtActorLocation>();
+	ExecNode->WorldContextObject = WorldContextObject;
+	ExecNode->SkycatchTerrain = SkycatchTerrain;
+	return ExecNode;
+}
+
+void URequestSkycatchTilesetAtActorLocation::Activate()
+{
+	this->SkycatchTerrainEventListener.BindUFunction(this, "Execute");
+	this->SkycatchTerrain->OnTilesetRequestCompleted.Add(this->SkycatchTerrainEventListener);
+
+	// Request tileset and bind on request completed to this class execute function
+	this->SkycatchTerrain->RequestTilesetAtActorLocation();
+}
+
+void URequestSkycatchTilesetAtActorLocation::Execute(bool success, ACesium3DTileset* CesiumTileset, ACesiumCartographicPolygon* CesiumPolygon)
+{
+	OnTilesetRequestCompleted.Broadcast(success, CesiumTileset, CesiumPolygon);
+
+	this->SkycatchTerrain->OnTilesetRequestCompleted.Remove(this->SkycatchTerrainEventListener);
+}

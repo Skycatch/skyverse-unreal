@@ -7,6 +7,8 @@
 #include "Dom/JsonObject.h"
 #include "Templates/SharedPointer.h"
 #include "GameFramework/Actor.h"
+#include "Async/Async.h"
+#include "Kismet/BlueprintAsyncActionBase.h"
 #include "CesiumGeoreference.h"
 #include "Cesium3DTileset.h"
 #include "CesiumCartographicPolygon.h"
@@ -14,6 +16,8 @@
 #include "SkycatchSettings.h"
 #include "SkycatchTerrain.generated.h"
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnTilesetRequestCompleted, bool, bSuccess, ACesium3DTileset*, CesiumTileset, ACesiumCartographicPolygon*, CesiumPolygon);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnTilesetLoaded, ACesium3DTileset*, CesiumTileset);
 
 UCLASS(Blueprintable)
 class SKYCATCHAPI_API ASkycatchTerrain : public AActor
@@ -161,14 +165,38 @@ public:
 	UFUNCTION(BlueprintCallable, Category=SkycatchTerrain)
 	void SetRasterOverlayVisible(bool isVisible);
 	
-	/**
-	 * @brief This function can be used to request a tileset in specific Latitude and Longitude coordinates.
-	 * 
-	 * @param Lat as a string containing the required Latitude
-	 * @param Lon as a string containing the required Longitude
-	 */
-	UFUNCTION(BlueprintCallable, Category=SkycatchTerrain)
-	void RequestTilesetAtCoordinates(FString Lat, FString Lon);
+
+	/*
+	* Event called when a request is completed (even if its unsuccessful)
+	*/
+	UPROPERTY(BlueprintAssignable)
+	FOnTilesetRequestCompleted OnTilesetRequestCompleted;
+
+	/*
+	* Event called when a tileset is loaded (it automatically binds to the Cesium3DTileset actor every time a new request is made)
+	*/
+	UPROPERTY(BlueprintAssignable)
+	FOnTilesetLoaded OnTilesetLoaded;
+
+	TScriptDelegate <FWeakObjectPtr> CesiumTilesetLoadedListener;
+
+	UFUNCTION(Category = SkycatchTerrain)
+	void CesiumTilesetLoadedForwardBroadcast();
+
+	/*
+	* Makes a request using lat and lon values. Internal C++ Use only
+	*/
+	void MakeRequest(double Lat, double Lon);
+
+	/*
+	* @brief This function can be used to request a tileset in specific Latitude and Longitude coordinates
+	* 
+	* @param Lat is the Latitude value
+	* @param Lon is the Longitude value
+	*/
+	UFUNCTION(BlueprintCallable, Category = SkycatchTerrain)
+	/*void RequestTilesetAtCoordinates(double Lat, double Lon, ACesiumCartographicPolygon*& CesiumPolygon, ACesium3DTileset*& CesiumTileset);*/
+	void RequestTilesetAtCoordinates(double Lat, double Lon);
 
 	/**
 	 * @brief This function can be used to request a tileset at the actor's location.
@@ -178,6 +206,12 @@ public:
 	UFUNCTION(BlueprintCallable, CallInEditor, Category=SkycatchTerrain)
 	void RequestTilesetAtActorLocation();
 	
+	/*
+	* @brief This function unloads the current tileset (if any) by destroying the associated Cesium actors
+	*/
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = SkycatchTerrain)
+	void UnloadTileset();
+
 	/**
 	 * @brief Global instance for the raster overlay of the world terrain.
 	 */
@@ -210,4 +244,60 @@ public:
 	 * @brief Global instance of the current tileset that is rendering.
 	 */
 	TSharedPtr<FJsonObject> SelectedTile;
+};
+
+/*
+* This class implements a blueprint function with async response for the SkycatchTerrain Request at coordinates function
+*/
+UCLASS()
+class SKYCATCHAPI_API URequestSkycatchTilesetAtCoordinates : public UBlueprintAsyncActionBase
+{
+	GENERATED_UCLASS_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+	FOnTilesetRequestCompleted OnTilesetRequestCompleted;
+
+	TScriptDelegate <FWeakObjectPtr> SkycatchTerrainEventListener;
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject"), Category = SkycatchTerrain)
+	static URequestSkycatchTilesetAtCoordinates* RequestSkycatchTilesetAtCoordinates(UObject* WorldContextObject, ASkycatchTerrain* SkycatchTerrain, double Lat, double Lon);
+
+	virtual void Activate() override;
+
+private:
+	UObject* WorldContextObject;
+	ASkycatchTerrain* SkycatchTerrain;
+	double Lat;
+	double Lon;
+
+	UFUNCTION()
+	void Execute(bool success, ACesium3DTileset* CesiumTileset, ACesiumCartographicPolygon* Polygon);
+};
+
+/*
+* This class implements a blueprint function with async response for the SkycatchTerrain Request at actor location function
+*/
+UCLASS()
+class SKYCATCHAPI_API URequestSkycatchTilesetAtActorLocation : public UBlueprintAsyncActionBase
+{
+	GENERATED_UCLASS_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable)
+		FOnTilesetRequestCompleted OnTilesetRequestCompleted;
+
+	TScriptDelegate <FWeakObjectPtr> SkycatchTerrainEventListener;
+
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject"), Category = SkycatchTerrain)
+		static URequestSkycatchTilesetAtActorLocation* RequestSkycatchTilesetAtActorLocation(UObject* WorldContextObject, ASkycatchTerrain* SkycatchTerrain);
+
+	virtual void Activate() override;
+
+private:
+	UObject* WorldContextObject;
+	ASkycatchTerrain* SkycatchTerrain;
+
+	UFUNCTION()
+		void Execute(bool success, ACesium3DTileset* CesiumTileset, ACesiumCartographicPolygon* Polygon);
 };
