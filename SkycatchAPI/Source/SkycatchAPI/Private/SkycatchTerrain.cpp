@@ -78,7 +78,7 @@ void ASkycatchTerrain::PostEditChangeProperty(FPropertyChangedEvent& PropertyCha
 			QueryParams = FString::Format(TEXT("lat={0}&lng={1}"), args) ;
 
 			//Calls the function to render the tileset over the new latitude, longitude parameters
-			FindResource(QueryParams);
+			FindResource(QueryParams, true);
 		}
 
 		//Checks if we have a change over the visibility value of the raster overlay checkbox 
@@ -104,7 +104,8 @@ void ASkycatchTerrain::PostEditChangeProperty(FPropertyChangedEvent& PropertyCha
  * 
  * @param Params as a string to add as query params for the API call
  */
-void ASkycatchTerrain::FindResource(FString Params){
+void ASkycatchTerrain::FindResource(FString Params, bool CalledFromEditor = false)
+{
 
 	//Checks if there is a Georeference Actor selected, if not the process stops
 	if(GeoreferenceActor == nullptr)
@@ -153,22 +154,46 @@ void ASkycatchTerrain::FindResource(FString Params){
 
 			// We should have a JSON response - attempt to process it.
 			HttpData = pResponse->GetContentAsString();
-			TArray<TSharedPtr<FJsonValue>> Tiles;
-			const TSharedRef<TJsonReader<>> JsonReader = TJsonReaderFactory<>::Create(HttpData);
-			FJsonSerializer::Deserialize(JsonReader, Tiles);
-			if(Tiles.Num()>0)
+			auto ResponseCode = pResponse->GetResponseCode();
+
+			// We got an OK response from tendpoint, attempt to parse
+			if (ResponseCode == 200)
 			{
-				//Selects the first tileset from the response
-				SelectedTile = Tiles[0]->AsObject();
-				//Parse the tileset url from the response
-				FString TilesetUrl = SelectedTile->GetStringField("tilesetUrl");
-				//Calls the function that renders the requested tileset
-				RenderResource(TilesetUrl);
-				bRequestSuccess = true;
-			}else
+				TArray<TSharedPtr<FJsonValue>> Tiles;
+				const TSharedRef<TJsonReader<>> JsonReader = TJsonReaderFactory<>::Create(HttpData);
+				FJsonSerializer::Deserialize(JsonReader, Tiles);
+				if(Tiles.Num()>0)
+				{
+					//Selects the first tileset from the response
+					SelectedTile = Tiles[0]->AsObject();
+					//Parse the tileset url from the response
+					FString TilesetUrl = SelectedTile->GetStringField("tilesetUrl");
+					//Calls the function that renders the requested tileset
+					RenderResource(TilesetUrl);
+					SpawnCartographicPolygon();
+
+					// When called from editor, the OnTilesetLoaded callback is not processed, so we immediately register the polygon
+					if (CalledFromEditor)
+					{
+						RenderRasterOverlay();
+					}
+
+					bRequestSuccess = true;
+				}else
+				{
+					//If there is not tiles, prints an error
+					UE_LOG(LogSkycatch, Error, TEXT("No tiles found"));				
+				}
+			}
+
+			if (ResponseCode == 401)
 			{
-				//If there is not tiles, prints an error
-				UE_LOG(LogSkycatch, Error, TEXT("No tiles found"));
+				UE_LOG(LogSkycatch, Error, TEXT("Invalid endpoint credentials. Please check that the Skyverse Key is correctly set in the project settings"));
+			}
+
+			if (ResponseCode == 404) 
+			{
+				UE_LOG(LogSkycatch, Error, TEXT("Endpoint not found. Please check that the Skyverse Endpoint is correctly set in the project settings"));
 			}
 		}
 		else {
@@ -196,7 +221,8 @@ void ASkycatchTerrain::FindResource(FString Params){
 void ASkycatchTerrain::RenderResource(FString url)
 {
 	//Checks if the global Cesium3DTilesetActor is already instantiated
-	if (!Cesium3DTilesetActor){
+	if (!Cesium3DTilesetActor)
+	{
 		//If not, instantiates a new Cesium3DTilesetActor and sets the required properties
 		const FVector Location = FVector(0,0,0);
 		const FRotator Rotation = FRotator(0,0,0);
@@ -206,7 +232,7 @@ void ASkycatchTerrain::RenderResource(FString url)
 		
 		// Change tileset configuration
 		Cesium3DTilesetActor->SetEnableOcclusionCulling(false);
-		Cesium3DTilesetActor->MaximumScreenSpaceError = 32.0;
+		Cesium3DTilesetActor->MaximumScreenSpaceError = 16.0;
 
 		//Listen to the tileset on loaded event
 		CesiumTilesetLoadedListener.BindUFunction(this, "CesiumTilesetLoadedForwardBroadcast");
@@ -218,10 +244,6 @@ void ASkycatchTerrain::RenderResource(FString url)
 	Cesium3DTilesetActor->SetTilesetSource(ETilesetSource::FromUrl);
 	Cesium3DTilesetActor->SetUrl(url);
 	UE_LOG(LogSkycatch, Display, TEXT("Response %s"), *url);
-
-	
-	//Calls the function to re-render the RasterOverlay from the new/updated tileset
-	RenderRasterOverlay();
 }
 
 /**
@@ -229,24 +251,43 @@ void ASkycatchTerrain::RenderResource(FString url)
  * CesiumRasterOverlay, then this new object is added to the world overlay to avoid oclussion in the current
  * tileset.
  */
-void ASkycatchTerrain::RenderRasterOverlay(){
+void ASkycatchTerrain::SpawnCartographicPolygon() 
+{
 	float altitude_m = 0;
-	const FVector Location = FVector(0,0,0);
-	const FRotator Rotation = FRotator(0,0,0);
+	const FVector Location = FVector(0, 0, 0);
+	const FRotator Rotation = FRotator(0, 0, 0);
 
 	//Gets a reference to the world terrain actor
-	if(const UWorld* World = GetWorld())
+	if (const UWorld* World = GetWorld())
 	{
 		WorldTerrain = UGameplayStatics::GetActorOfClass(World, ACesium3DTileset::StaticClass());
 	}
 
 	//Parses the response from the current tile fetched from Skycatch services
 	TArray<TSharedPtr<FJsonValue>> Coordinates;
-	Coordinates = SelectedTile->GetObjectField("outline")->GetArrayField("coordinates")[0]->AsArray();
+
+	auto outline = SelectedTile->GetObjectField("outline");
+	if (!outline)
+	{
+		UE_LOG(LogSkycatch, Error, TEXT("Tileset outline polygon not found."));
+		return;
+	}
+
+	auto type = outline->GetStringField("type");
+
+	// Handle different configurations of the incoming outline
+	if (type == "Feature")
+	{
+		Coordinates = outline->GetObjectField("geometry")->GetArrayField("coordinates")[0]->AsArray();
+	}
+	else {
+		Coordinates = SelectedTile->GetObjectField("outline")->GetArrayField("coordinates")[0]->AsArray();
+	}
+
 	TArray<FVector> SplinePoints = {};
 
 	//Iterates over the geojson data that contains the coordinates to create the Raster polygon
-	for(int i = 0 ; i<Coordinates.Num(); i++)
+	for (int i = 0; i < Coordinates.Num(); i++)
 	{
 		TArray<TSharedPtr<FJsonValue>> Coords;
 		Coords = Coordinates[i]->AsArray();
@@ -270,31 +311,62 @@ void ASkycatchTerrain::RenderRasterOverlay(){
 		this->Children.Add(CartographicPolygon);
 		CartographicPolygon->Tags.Add(FName("Skycatch"));
 	}
-	
+
 	//Sets the polygon of the CesiumCartographicPolygon
-	CartographicPolygon->Polygon->SetSplinePoints(SplinePoints,ESplineCoordinateSpace::Local);
+	CartographicPolygon->Polygon->SetSplinePoints(SplinePoints, ESplineCoordinateSpace::Local);
+}
+
+
+/**
+ * @brief Function that takes the data from a geojson obtained over the HTTP call to create and instantiate a
+ * CesiumRasterOverlay, then this new object is added to the world overlay to avoid oclussion in the current
+ * tileset.
+ */
+void ASkycatchTerrain::RenderRasterOverlay()
+{
+	
+	//Gets a reference to the world terrain actor
+	if (const UWorld* World = GetWorld())
+	{
+		WorldTerrain = UGameplayStatics::GetActorOfClass(World, ACesium3DTileset::StaticClass());
+	}
 
 	//Checks if the world terrain exists
 	if(WorldTerrain)
 	{
-		//Finds the CesiumPolygonRasterOverlay component from the world terrain
-		UCesiumPolygonRasterOverlay* Raster = WorldTerrain->FindComponentByClass<UCesiumPolygonRasterOverlay>();
-		if (!Raster)
+		// Checks if raster overlay component in world terrain exists, if not it creates a new one
+		RasterOverlay = WorldTerrain->FindComponentByClass<UCesiumPolygonRasterOverlay>();
+		if (!RasterOverlay)
 		{
 			// Create a new PolygonRasterOverlayComponent and add it to the World Terrain
-			const auto NewRaster = NewObject<UCesiumPolygonRasterOverlay>(WorldTerrain, FName("CesiumPolygonRasterOverlay"));
-			NewRaster->RegisterComponent();
-			Raster = NewRaster;
-			WorldTerrain->AddInstanceComponent(Raster);
+			const auto NewRasterOverlay = NewObject<UCesiumPolygonRasterOverlay>(WorldTerrain, FName("CesiumPolygonRasterOverlay"));
+			NewRasterOverlay->RegisterComponent();
+			RasterOverlay = NewRasterOverlay;
+			WorldTerrain->AddInstanceComponent(RasterOverlay);
 		}
 
 		// At this point we should have a valid Raster Overlay object
-		if(Raster)
+		if(RasterOverlay)
 		{
-			//adds the cartographic polygon to the raster overlay to avoid occlusion
-			Raster->Polygons.Add(CartographicPolygon);
-			//Refresh the world terrain tilesets
-			Cast<ACesium3DTileset>(WorldTerrain)->RefreshTileset();
+			bool PolygonAlreadyRegistered = false;
+			// Search the polygon in the raster overlay polygons array
+			for (auto* OverlayPolygon : RasterOverlay->Polygons)
+			{
+				if (OverlayPolygon == CartographicPolygon)
+				{
+					UE_LOG(LogSkycatch, Display, TEXT("Polygon already registered"));
+					PolygonAlreadyRegistered = true;
+					break;
+				}
+			}
+
+			if (!PolygonAlreadyRegistered)
+			{
+				// Adds the cartographic polygon to the raster overlay to avoid occlusion
+				RasterOverlay->Polygons.Add(CartographicPolygon);
+				// Refresh the world terrain tilesets
+				Cast<ACesium3DTileset>(WorldTerrain)->RefreshTileset();
+			}
 		}
 	}
 }
@@ -345,8 +417,10 @@ void ASkycatchTerrain::SetRasterOverlayVisible(bool isVisible)
 	{
 		//Finds the CesiumPolygonRasterOverlay component from the world terrain
 		UCesiumPolygonRasterOverlay* Raster = WorldTerrain->FindComponentByClass<UCesiumPolygonRasterOverlay>();
-		if(Raster) {
-			if (!isVisible){
+		if(Raster) 
+		{
+			if (!isVisible)
+			{
 				//removes the polygon from the world terrain
 				Raster->Polygons.Remove(CartographicPolygon);
 			}
@@ -362,7 +436,8 @@ void ASkycatchTerrain::SetRasterOverlayVisible(bool isVisible)
 	}
 }
 
-void ASkycatchTerrain::MakeRequest(double Lat, double Lon) {
+void ASkycatchTerrain::MakeRequest(double Lat, double Lon) 
+{
 	//Creates an array for making the query params used in the HTTP calling to Skycatch services
 	TArray<FStringFormatArg> args;
 	args.Add(FStringFormatArg(Lat));
@@ -375,7 +450,8 @@ void ASkycatchTerrain::MakeRequest(double Lat, double Lon) {
 	FindResource(QueryParams);
 }
 
-void ASkycatchTerrain::RequestTilesetAtCoordinates(double Lat, double Lon) {
+void ASkycatchTerrain::RequestTilesetAtCoordinates(double Lat, double Lon) 
+{
 
 	MakeRequest(Lat, Lon);
 
@@ -437,6 +513,12 @@ void ASkycatchTerrain::UnloadTileset()
 
 void ASkycatchTerrain::CesiumTilesetLoadedForwardBroadcast()
 {
+	// We register the polygon as a raster overlay when the tileset is visible
+	if (AutoRegisterPolygon)
+	{
+		RenderRasterOverlay();
+	}
+
 	// This function is called whenever the instanced Cesium3DTiles Actor fires its "OnLoaded" event, so we just broadcast a new event with a reference to the tileset
 	OnTilesetLoaded.Broadcast(Cesium3DTilesetActor);
 }
@@ -449,18 +531,20 @@ URequestSkycatchTilesetAtCoordinates::URequestSkycatchTilesetAtCoordinates(const
 	WorldContextObject(nullptr),
 	SkycatchTerrain(nullptr),
 	Lat(0.0),
-	Lon(0.0)
+	Lon(0.0),
+	AutoRegisterPolygon(true)
 {
 
 }
 
-URequestSkycatchTilesetAtCoordinates* URequestSkycatchTilesetAtCoordinates::RequestSkycatchTilesetAtCoordinates(UObject* WorldContextObject, ASkycatchTerrain* SkycatchTerrain, double Lat, double Lon)
+URequestSkycatchTilesetAtCoordinates* URequestSkycatchTilesetAtCoordinates::RequestSkycatchTilesetAtCoordinates(UObject* WorldContextObject, ASkycatchTerrain* SkycatchTerrain, double Lat, double Lon, bool AutoRegisterPolygon)
 {
 	URequestSkycatchTilesetAtCoordinates* ExecNode = NewObject<URequestSkycatchTilesetAtCoordinates>();
 	ExecNode->WorldContextObject = WorldContextObject;
 	ExecNode->SkycatchTerrain = SkycatchTerrain;
 	ExecNode->Lat = Lat;
 	ExecNode->Lon = Lon;
+	ExecNode->AutoRegisterPolygon = AutoRegisterPolygon;
 	return ExecNode;
 }
 
@@ -468,6 +552,9 @@ void URequestSkycatchTilesetAtCoordinates::Activate()
 {
 	this->SkycatchTerrainEventListener.BindUFunction(this, "Execute");
 	this->SkycatchTerrain->OnTilesetRequestCompleted.Add(this->SkycatchTerrainEventListener);
+
+	// Set AutoRegisterPolygon value
+	this->SkycatchTerrain->AutoRegisterPolygon = AutoRegisterPolygon;
 
 	// Request tileset and bind on request completed to this class execute function
 	this->SkycatchTerrain->RequestTilesetAtCoordinates(Lat, Lon);
@@ -487,16 +574,18 @@ void URequestSkycatchTilesetAtCoordinates::Execute(bool success, ACesium3DTilese
 URequestSkycatchTilesetAtActorLocation::URequestSkycatchTilesetAtActorLocation(const FObjectInitializer& ObjectInitializer) :
 	Super(ObjectInitializer),
 	WorldContextObject(nullptr),
-	SkycatchTerrain(nullptr)
+	SkycatchTerrain(nullptr),
+	AutoRegisterPolygon(true)
 {
 
 }
 
-URequestSkycatchTilesetAtActorLocation* URequestSkycatchTilesetAtActorLocation::RequestSkycatchTilesetAtActorLocation(UObject* WorldContextObject, ASkycatchTerrain* SkycatchTerrain)
+URequestSkycatchTilesetAtActorLocation* URequestSkycatchTilesetAtActorLocation::RequestSkycatchTilesetAtActorLocation(UObject* WorldContextObject, ASkycatchTerrain* SkycatchTerrain, bool AutoRegisterPolygon)
 {
 	URequestSkycatchTilesetAtActorLocation* ExecNode = NewObject<URequestSkycatchTilesetAtActorLocation>();
 	ExecNode->WorldContextObject = WorldContextObject;
 	ExecNode->SkycatchTerrain = SkycatchTerrain;
+	ExecNode->AutoRegisterPolygon = AutoRegisterPolygon;
 	return ExecNode;
 }
 
@@ -504,6 +593,9 @@ void URequestSkycatchTilesetAtActorLocation::Activate()
 {
 	this->SkycatchTerrainEventListener.BindUFunction(this, "Execute");
 	this->SkycatchTerrain->OnTilesetRequestCompleted.Add(this->SkycatchTerrainEventListener);
+
+	// Set AutoRegisterPolygon value
+	this->SkycatchTerrain->AutoRegisterPolygon = AutoRegisterPolygon;
 
 	// Request tileset and bind on request completed to this class execute function
 	this->SkycatchTerrain->RequestTilesetAtActorLocation();

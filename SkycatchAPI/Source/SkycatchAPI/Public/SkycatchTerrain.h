@@ -67,7 +67,14 @@ public:
 		Category=SkycatchTerrainProperties)
 	ACesiumCartographicPolygon* CartographicPolygon;
 
-	
+	/*
+	* @brief Property that allows to define whether to automatically register the cartographic polygon of a new request as raster overlay
+	*/
+	UPROPERTY(EditAnywhere,
+		BlueprintReadWrite,
+		Category = SkycatchTerrainProperties)
+	bool AutoRegisterPolygon = true;
+
 	/**
 	 * @brief Global property for managing the current visibility of the rendered tileset
 	 * This property can be edited over Blueprints in UE editor.
@@ -120,7 +127,7 @@ public:
 	 * 
 	 * @param Params as a string to add as query params for the API call
 	 */
-	void FindResource(FString Params);
+	void FindResource(FString Params, bool CalledFromEditor);
 
 	/**
 	 * @brief Function that receives a string url from the fetched tileset and instantiates or updates the current
@@ -130,6 +137,17 @@ public:
 	 */
 	void RenderResource(FString url);
 	
+	/*
+	* @brief Adds a CesiumPolygonRasterOverlay component into the World Terrain Actor. Internal use only
+	*/
+	void AddRasterOverlayComponentToWorldTerrain();
+
+	/*
+	* @brief Functions that takes info from a request response to spawn a cartographic polygon
+	*/
+	void SpawnCartographicPolygon();
+
+
 	/**
 	 * @brief Function that takes the data from a geojson obtained over the HTTP call to create and instantiate a
 	 * CesiumRasterOverlay, then this new object is added to the world overlay to avoid oclussion in the current
@@ -213,7 +231,7 @@ public:
 	void UnloadTileset();
 
 	/**
-	 * @brief Global instance for the raster overlay of the world terrain.
+	 * @brief Global instance for the raster overlay component of the world terrain.
 	 */
 	UCesiumPolygonRasterOverlay* RasterOverlay;
 	
@@ -261,7 +279,11 @@ public:
 	TScriptDelegate <FWeakObjectPtr> SkycatchTerrainEventListener;
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject"), Category = SkycatchTerrain)
-	static URequestSkycatchTilesetAtCoordinates* RequestSkycatchTilesetAtCoordinates(UObject* WorldContextObject, ASkycatchTerrain* SkycatchTerrain, double Lat, double Lon);
+	static URequestSkycatchTilesetAtCoordinates* RequestSkycatchTilesetAtCoordinates(UObject* WorldContextObject, 
+		ASkycatchTerrain* SkycatchTerrain, 
+		double Lat, 
+		double Lon,
+		bool AutoRegisterPolygon);
 
 	virtual void Activate() override;
 
@@ -270,6 +292,7 @@ private:
 	ASkycatchTerrain* SkycatchTerrain;
 	double Lat;
 	double Lon;
+	bool AutoRegisterPolygon;
 
 	UFUNCTION()
 	void Execute(bool success, ACesium3DTileset* CesiumTileset, ACesiumCartographicPolygon* Polygon);
@@ -290,13 +313,16 @@ public:
 	TScriptDelegate <FWeakObjectPtr> SkycatchTerrainEventListener;
 
 	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject"), Category = SkycatchTerrain)
-		static URequestSkycatchTilesetAtActorLocation* RequestSkycatchTilesetAtActorLocation(UObject* WorldContextObject, ASkycatchTerrain* SkycatchTerrain);
+		static URequestSkycatchTilesetAtActorLocation* RequestSkycatchTilesetAtActorLocation(UObject* WorldContextObject, 
+			ASkycatchTerrain* SkycatchTerrain, 
+			bool AutoRegisterPolygon);
 
 	virtual void Activate() override;
 
 private:
 	UObject* WorldContextObject;
 	ASkycatchTerrain* SkycatchTerrain;
+	bool AutoRegisterPolygon;
 
 	UFUNCTION()
 		void Execute(bool success, ACesium3DTileset* CesiumTileset, ACesiumCartographicPolygon* Polygon);
