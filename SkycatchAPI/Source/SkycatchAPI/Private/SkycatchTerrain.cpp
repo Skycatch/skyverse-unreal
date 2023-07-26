@@ -144,7 +144,7 @@ void ASkycatchTerrain::FindResource(FString Params, bool CalledFromEditor = fals
 	pRequest->OnProcessRequestComplete().BindLambda(
 		// Here, we "capture" the 'this' pointer (the "&"), so our lambda can call this
 		// class's methods in the callback.
-		[&](
+		[&, CalledFromEditor](
 			FHttpRequestPtr pRequest,
 			FHttpResponsePtr pResponse,
 			bool connectedSuccessfully) mutable {
@@ -175,6 +175,7 @@ void ASkycatchTerrain::FindResource(FString Params, bool CalledFromEditor = fals
 					// When called from editor, the OnTilesetLoaded callback is not processed, so we immediately register the polygon
 					if (CalledFromEditor)
 					{
+						// When called from editor, always register the polygon as raster overlay
 						RenderRasterOverlay();
 					}
 
@@ -488,6 +489,39 @@ void ASkycatchTerrain::RequestTilesetAtActorLocation()
 
 }
 
+
+void ASkycatchTerrain::RequestTilesetAtActorLocationEditor()
+{
+	//Checks if there is a Georeference Actor selected, if not the process stops
+	if (GeoreferenceActor == nullptr)
+	{
+		UE_LOG(LogSkycatch, Error, TEXT("No Georeference Actor selected in SkycatchTerrain Actor"));
+		return;
+	}
+
+	// Get actor position
+	const auto ActorLocation = GetActorLocation();
+
+	// Convert actor coordinates from unreal to Lat, Lon
+	const auto LatLonHeight = GeoreferenceActor->TransformUnrealToLongitudeLatitudeHeight(glm::dvec3(ActorLocation.X, ActorLocation.Y, ActorLocation.Z));
+	const auto Lat = LatLonHeight.y;
+	const auto Lon = LatLonHeight.x;
+
+	// Update Lat, Lon values
+	Latitude = FString::SanitizeFloat(Lat);
+	Longitude = FString::SanitizeFloat(Lon);
+
+	// Now make a request on the given coordinates
+	TArray<FStringFormatArg> args;
+	args.Add(FStringFormatArg(Lat));
+	args.Add(FStringFormatArg(Lon));
+
+	//Creates the string with the query params
+	QueryParams = FString::Format(TEXT("lat={0}&lng={1}"), args);
+
+	//Calls the function to render the tileset over the new latitude, longitude parameters
+	FindResource(QueryParams, true);
+}
 
 /*
  * @brief This function unloads the current tileset (if any) by destroying the associated Cesium actors

@@ -221,9 +221,12 @@ public:
 	 * This actor's reference to the active Cesium Georeference must be valid,
 	 * since that is used to convert from Unreal to Lat, Lon coordinates
 	 */
-	UFUNCTION(BlueprintCallable, CallInEditor, Category=SkycatchTerrain)
+	UFUNCTION(BlueprintCallable, Category=SkycatchTerrain)
 	void RequestTilesetAtActorLocation();
 	
+	UFUNCTION(CallInEditor, Category = SkycatchTerrain)
+	void RequestTilesetAtActorLocationEditor();
+
 	/*
 	* @brief This function unloads the current tileset (if any) by destroying the associated Cesium actors
 	*/
