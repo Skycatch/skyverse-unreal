@@ -2,7 +2,7 @@
 
 This plugin leverages the Skycatch APIs to easily integrate SkyVerse 3d models into Unreal Engine
 
-### Version 1.0.1
+### Version 1.1.0
 
 ## Dependencies
 
